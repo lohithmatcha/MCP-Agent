@@ -46,8 +46,8 @@ exports.analyzePackage = async (req, res) => {
       };
     }
 
-    // cache for AI endpoint (include actions + cicd so LLM can use them)
-    scanCache.set(repoUrl, { scores, overall, recommendedActions: actions, cicdFindings });
+    // cache for AI endpoint
+    scanCache.set(repoUrl, { scores, overall });
 
     // ✅ respond once
     res.json({
@@ -64,10 +64,7 @@ exports.analyzePackage = async (req, res) => {
     // background LLM generation (optional; skip if already cached)
     const cached = scanCache.get(repoUrl) || {};
     if (!cached.shortAI) {
-      generateLLMExplanation(scores, overall, "short", {
-        recommendedActions: actions,
-        cicdFindings,
-      }).then((text) => {
+      generateLLMExplanation(scores, overall, "short").then((text) => {
         const prev = scanCache.get(repoUrl) || {};
         scanCache.set(repoUrl, { ...prev, shortAI: text });
         console.log(`🧠 Cached LLM summary for ${repoUrl}`);
@@ -93,10 +90,7 @@ exports.getAIExplanation = async (req, res) => {
       return res.json({ explanation: analysis[cacheKey] });
     }
 
-    const text = await generateLLMExplanation(analysis.scores, analysis.overall, d, {
-      recommendedActions: analysis.recommendedActions || [],
-      cicdFindings: analysis.cicdFindings || null,
-    });
+    const text = await generateLLMExplanation(analysis.scores, analysis.overall, d);
     const prev = scanCache.get(repoUrl) || {};
     scanCache.set(repoUrl, { ...prev, [cacheKey]: text });
 
