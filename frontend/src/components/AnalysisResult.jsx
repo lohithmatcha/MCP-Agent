@@ -83,6 +83,33 @@ const AnalysisResult = ({ data }) => {
   const cicdRows = cicdFindings?.findings || [];
   const cicdScanned = cicdFindings?.workflowsScanned ?? 0;
 
+  // Risk-at-a-glance counts
+  const riskCounts = (riskAnalysis || []).reduce(
+    (acc, r) => {
+      const l = (r.level || "").toLowerCase();
+      if (l === "high") acc.high++;
+      else if (l === "medium") acc.medium++;
+      else acc.low++;
+      return acc;
+    },
+    { high: 0, medium: 0, low: 0 }
+  );
+  const riskSummaryLine =
+    riskCounts.high > 0
+      ? `${riskCounts.high} high-risk and ${riskCounts.medium} medium-risk dependencies need attention.`
+      : riskCounts.medium > 0
+      ? `${riskCounts.medium} medium-risk dependencies to review.`
+      : "No high or medium risk dependencies detected.";
+
+  // Parse AI response into sections for prominent "Safer alternatives" display
+  const getSection = (text, heading) => {
+    if (!text || typeof text !== "string") return null;
+    const regex = new RegExp(`##\\s*${heading.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\s*([\\s\\S]*?)(?=##|$)`, "im");
+    const match = text.match(regex);
+    return match ? match[1].trim() : null;
+  };
+  const alternativesSection = aiText ? getSection(aiText, "Safer alternatives") : null;
+
   return (
     <div className="analysis-page">
       <div className="analysis-container">
@@ -96,6 +123,16 @@ const AnalysisResult = ({ data }) => {
 
         <div className={`overall-risk ${overallRisk.toLowerCase()}`}>
           <strong>Overall Risk:</strong> {overallRisk}
+        </div>
+
+        {/* Risk at a glance */}
+        <div className="risk-at-a-glance">
+          <div className="risk-counts">
+            <span className="risk-badge high">{riskCounts.high} High</span>
+            <span className="risk-badge medium">{riskCounts.medium} Medium</span>
+            <span className="risk-badge low">{riskCounts.low} Low</span>
+          </div>
+          <p className="risk-summary-line">{riskSummaryLine}</p>
         </div>
 
         <h3 className="section-title">🧩 Dependency Risk Breakdown</h3>
@@ -208,9 +245,9 @@ const AnalysisResult = ({ data }) => {
         <h3 className="section-title">🚨 Recommended Actions</h3>
 
         <div className="actions-list">
-          {recommendedActions.length === 0 && <p>✅ No critical actions required.</p>}
+          {(recommendedActions || []).length === 0 && <p>✅ No critical actions required.</p>}
 
-          {recommendedActions.map((a, i) => {
+          {(recommendedActions || []).map((a, i) => {
             const isAlert = a.type === "ALERT";
             const isBlock = a.type === "BLOCK_PR";
             const isComment = a.type === "COMMENT";
@@ -300,27 +337,44 @@ const AnalysisResult = ({ data }) => {
           )}
         </div>
 
-        {/* AI Explanation */}
-        <h3 className="section-title">🧠 AI Explanation</h3>
+        {/* AI Explanation & Safer Alternatives */}
+        <h3 className="section-title">🧠 AI Explanation & Safer Alternatives</h3>
+        <p className="ai-section-desc">
+          Get a plain-language summary, which dependencies are risky and why, and <strong>concrete safer alternatives</strong> for your repo.
+        </p>
         <div className="ai-controls">
           <button onClick={() => fetchAI("short")} disabled={loading}>
-            {loading ? "Generating..." : "🔄 Refresh (Short)"}
+            {loading ? "Generating… (may take 15–30s)…" : "📋 Summary & alternatives"}
           </button>
           <button onClick={() => fetchAI("detailed")} disabled={loading}>
-            {loading ? "Generating..." : "🧩 Explain in Detail"}
+            {loading ? "Generating…" : "🧩 Detailed explanation"}
           </button>
         </div>
 
+        {alternativesSection && (
+          <div className="alternatives-highlight">
+            <h4 className="alternatives-title">🔄 Safer alternatives</h4>
+            <div
+              className="alternatives-body markdown"
+              dangerouslySetInnerHTML={{
+                __html: DOMPurify.sanitize(marked.parse(alternativesSection)),
+              }}
+            />
+          </div>
+        )}
+
         <div className="explanation">
           <div className="markdown">
-            {aiText ? (
+            {loading && !aiText ? (
+              <p className="ai-loading">⏳ Generating summary and alternatives…</p>
+            ) : aiText ? (
               <div
                 dangerouslySetInnerHTML={{
                   __html: DOMPurify.sanitize(marked.parse(aiText)),
                 }}
               />
             ) : (
-              <p>⏳Click any of the above buttons for AI- Explanation</p>
+              <p className="ai-empty">Click <strong>Summary & alternatives</strong> above to see risk summary and suggested package replacements.</p>
             )}
           </div>
         </div>

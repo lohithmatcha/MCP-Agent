@@ -131,6 +131,54 @@
 }
 
 /* ----- Dependency Risk Table (single table with OSV column) ----- */
+/* Risk at a glance */
+.risk-at-a-glance {
+  margin: 12px 0 20px;
+  padding: 14px 18px;
+  background: linear-gradient(135deg, #f8fafc 0%, #f1f5f9 100%);
+  border: 1px solid #e2e8f0;
+  border-radius: 10px;
+}
+
+.risk-counts {
+  display: flex;
+  gap: 10px;
+  flex-wrap: wrap;
+  margin-bottom: 8px;
+}
+
+.risk-badge {
+  padding: 4px 10px;
+  border-radius: 999px;
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.risk-badge.high {
+  background: #fee2e2;
+  color: #b91c1c;
+  border: 1px solid #fecaca;
+}
+
+.risk-badge.medium {
+  background: #ffedd5;
+  color: #c2410c;
+  border: 1px solid #fed7aa;
+}
+
+.risk-badge.low {
+  background: #dcfce7;
+  color: #166534;
+  border: 1px solid #bbf7d0;
+}
+
+.risk-summary-line {
+  margin: 0;
+  font-size: 0.95rem;
+  color: #334155;
+  line-height: 1.45;
+}
+
 .risk-table-wrapper {
   width: 100%;
 }
@@ -275,6 +323,42 @@
 .ai-controls button:disabled {
   opacity: 0.6;
   cursor: not-allowed;
+}
+
+.ai-section-desc {
+  margin: -4px 0 10px;
+  font-size: 0.95rem;
+  color: #475569;
+}
+
+.ai-loading,
+.ai-empty {
+  color: #64748b;
+  font-size: 0.95rem;
+}
+
+/* Safer alternatives highlight block */
+.alternatives-highlight {
+  margin: 16px 0 20px;
+  padding: 16px 20px;
+  background: linear-gradient(135deg, #ecfdf5 0%, #d1fae5 100%);
+  border: 1px solid #a7f3d0;
+  border-radius: 10px;
+}
+
+.alternatives-title {
+  margin: 0 0 10px;
+  font-size: 1.05rem;
+  color: #065f46;
+}
+
+.alternatives-body {
+  background: transparent;
+  padding: 0;
+}
+
+.alternatives-body ul {
+  margin: 6px 0 0 1.2rem;
 }
 
 /* Optional: colorize risk levels if you already have classes like .low/.medium/.high */
