@@ -86,7 +86,6 @@ Raw data for all ${mainRisks.length} main risks (package, score, level, optional
 ${jsonData}
 
 Output only the markdown report, no preamble.`;
-
     let lastErr;
     for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
       try {

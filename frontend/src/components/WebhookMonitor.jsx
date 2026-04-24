@@ -4,6 +4,7 @@ import AnalysisResult from "./AnalysisResult";
 const WebhookMonitor = () => {
   const [events, setEvents] = useState([]);
   const [selectedRepo, setSelectedRepo] = useState("");
+  const [repoInput, setRepoInput] = useState("");
   const [latest, setLatest] = useState(null);
   const [loadingLatest, setLoadingLatest] = useState(false);
 
@@ -35,7 +36,7 @@ const WebhookMonitor = () => {
   }, []);
 
   // unique repos from newest-first events list
-  const repos = useMemo(() => {
+  const reposFromEvents = useMemo(() => {
     const seen = new Set();
     const list = [];
     for (const e of events) {
@@ -47,10 +48,13 @@ const WebhookMonitor = () => {
     return list;
   }, [events]);
 
-  // auto-select newest repo
-  useEffect(() => {
-    if (!selectedRepo && repos.length > 0) setSelectedRepo(repos[0]);
-  }, [repos, selectedRepo]);
+  // Keep selected repo visible in dropdown even if it wasn't from events
+  const repos = useMemo(() => {
+    if (!selectedRepo) return reposFromEvents;
+    return reposFromEvents.includes(selectedRepo)
+      ? reposFromEvents
+      : [selectedRepo, ...reposFromEvents];
+  }, [reposFromEvents, selectedRepo]);
 
   // poll latest analysis for selected repo
   useEffect(() => {
@@ -86,6 +90,12 @@ const WebhookMonitor = () => {
     };
   }, [selectedRepo]);
 
+  // Filter event list by the selected repo so UI stays consistent.
+  const displayedEvents = useMemo(() => {
+    if (!selectedRepo) return events;
+    return events.filter((e) => e.repoUrl === selectedRepo);
+  }, [events, selectedRepo]);
+
   // ✅ NEW: trigger re-analysis manually
   const reanalyzeNow = async () => {
     if (!selectedRepo) return;
@@ -113,6 +123,12 @@ const WebhookMonitor = () => {
     }
   };
 
+  const useTypedRepo = () => {
+    const typed = repoInput.trim();
+    if (!typed) return;
+    setSelectedRepo(typed);
+  };
+
   return (
     <div style={{ marginTop: 16 }}>
       <h2 style={{ marginTop: 0 }}>🔔 Webhook Mode (Real-time)</h2>
@@ -135,13 +151,29 @@ const WebhookMonitor = () => {
           onChange={(e) => setSelectedRepo(e.target.value)}
           style={{ padding: 6, minWidth: 420 }}
         >
-          {repos.length === 0 && <option value="">No repos yet</option>}
+          <option value="">Select repo</option>
+          {repos.length === 0 && <option value="" disabled>No repos from events yet</option>}
           {repos.map((r) => (
             <option key={r} value={r}>
               {r}
             </option>
           ))}
         </select>
+
+        <input
+          value={repoInput}
+          onChange={(e) => setRepoInput(e.target.value)}
+          placeholder="or paste repo URL (https://github.com/owner/repo)"
+          style={{ padding: 6, minWidth: 360 }}
+        />
+        <button
+          onClick={useTypedRepo}
+          disabled={!repoInput.trim()}
+          style={{ padding: "6px 10px", cursor: "pointer" }}
+          title="Use the typed repo URL in webhook mode"
+        >
+          Use repo URL
+        </button>
 
         {/* ✅ NEW BUTTON */}
         <button
@@ -167,13 +199,17 @@ const WebhookMonitor = () => {
         <div style={{ border: "1px solid #ddd", borderRadius: 8, padding: 12 }}>
           <h3 style={{ marginTop: 0 }}>Recent Events</h3>
           <div style={{ maxHeight: 520, overflow: "auto" }}>
-            {events.length === 0 && (
-              <p>No events yet. Trigger a push/PR/workflow.</p>
+            {displayedEvents.length === 0 && (
+              <p>
+                {selectedRepo
+                  ? "No events yet for this repo. Trigger a push/PR/workflow."
+                  : "No events yet. Trigger a push/PR/workflow."}
+              </p>
             )}
 
-            {events.map((e, idx) => (
+            {displayedEvents.map((e, idx) => (
               <div
-                key={idx}
+                key={e.delivery || `${e.type}-${e.receivedAt}-${idx}`}
                 style={{ padding: "8px 0", borderBottom: "1px solid #eee" }}
               >
                 <div>
@@ -193,7 +229,7 @@ const WebhookMonitor = () => {
         {/* latest analysis */}
         <div>
           <h3 style={{ marginTop: 0 }}>Latest Analysis</h3>
-          {!selectedRepo && <p>Select a repo to view analysis.</p>}
+          {!selectedRepo && null}
           {selectedRepo && !latest && (
             <p>
               Waiting for analysis… trigger an event (push/PR/workflow) OR click

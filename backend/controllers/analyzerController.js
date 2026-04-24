@@ -4,6 +4,12 @@ const { generateLLMExplanation } = require("../utils/llmExplain");
 
 const scanCache = new Map();
 
+function upsertScanCache(repoUrl, scores, overall) {
+  if (!repoUrl) return;
+  const prev = scanCache.get(repoUrl) || {};
+  scanCache.set(repoUrl, { ...prev, scores, overall });
+}
+
 exports.analyzePackage = async (req, res) => {
   try {
     const { repoUrl } = req.body;
@@ -47,7 +53,7 @@ exports.analyzePackage = async (req, res) => {
     }
 
     // cache for AI endpoint
-    scanCache.set(repoUrl, { scores, overall });
+    upsertScanCache(repoUrl, scores, overall);
 
     // ✅ respond once
     res.json({
@@ -102,3 +108,4 @@ exports.getAIExplanation = async (req, res) => {
 };
 
 exports.getCachedScan = () => scanCache;
+exports.upsertScanCache = upsertScanCache;

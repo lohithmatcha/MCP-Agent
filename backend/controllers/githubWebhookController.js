@@ -1,6 +1,7 @@
 // backend/controllers/githubWebhookController.js
 const crypto = require("crypto");
 const axios = require("axios");
+const { upsertScanCache } = require("./analyzerController");
 const {
   EVENTS_FILE,
   ANALYSES_FILE,
@@ -13,19 +14,27 @@ const {
 // -------------------------------
 const MAX_EVENTS = 50;
 const MAX_ANALYSES_LOAD = 200;
+const MAX_HISTORY_PER_REPO = 20;
+const DELIVERY_DEDUP_WINDOW_MS = 24 * 60 * 60 * 1000; // 24h
+const MAX_DELIVERY_CACHE = 2000;
+const SCAN_TRIGGER_EVENTS = new Set(["push", "pull_request", "workflow_run"]);
 
 const events = loadLastN(EVENTS_FILE, MAX_EVENTS); // ✅ load persisted events
 const latestByRepo = new Map();
 
 // keep small analysis history per repo (for trends later)
 const historyByRepo = new Map();
-const MAX_HISTORY_PER_REPO = 20;
+const inflightByRepo = new Map();
+const pendingByRepo = new Set();
+const processedDeliveries = new Map();
 
 // hydrate latestByRepo + history from persisted analyses
 const pastAnalyses = loadLastN(ANALYSES_FILE, MAX_ANALYSES_LOAD);
 for (const a of pastAnalyses) {
   if (a?.repoUrl) {
     latestByRepo.set(a.repoUrl, a);
+    // Rebuild shared AI cache so /api/ai-explain works after backend restarts.
+    upsertScanCache(a.repoUrl, a.riskAnalysis || [], a.overallRisk || "Low");
     const arr = historyByRepo.get(a.repoUrl) || [];
     arr.push(a);
     historyByRepo.set(a.repoUrl, arr.slice(-MAX_HISTORY_PER_REPO));
@@ -36,6 +45,45 @@ function pushEvent(e) {
   events.unshift(e);
   if (events.length > MAX_EVENTS) events.pop();
   appendLine(EVENTS_FILE, e); // ✅ persist
+}
+
+function isMonitorAuthorized(req) {
+  const expected = process.env.WEBHOOK_MONITOR_API_KEY;
+  if (!expected) return true; // keep local dev simple
+
+  const providedHeader = req.headers["x-api-key"];
+  const providedQuery = req.query?.apiKey;
+  const provided = (providedHeader || providedQuery || "").toString();
+  return provided === expected;
+}
+
+function rememberDelivery(deliveryId) {
+  if (!deliveryId) return;
+  const now = Date.now();
+  processedDeliveries.set(deliveryId, now);
+
+  // TTL cleanup
+  for (const [id, ts] of processedDeliveries.entries()) {
+    if (now - ts > DELIVERY_DEDUP_WINDOW_MS) processedDeliveries.delete(id);
+  }
+
+  // Size cap cleanup (remove oldest)
+  while (processedDeliveries.size > MAX_DELIVERY_CACHE) {
+    const oldestKey = processedDeliveries.keys().next().value;
+    if (!oldestKey) break;
+    processedDeliveries.delete(oldestKey);
+  }
+}
+
+function hasSeenDelivery(deliveryId) {
+  if (!deliveryId) return false;
+  const ts = processedDeliveries.get(deliveryId);
+  if (!ts) return false;
+  if (Date.now() - ts > DELIVERY_DEDUP_WINDOW_MS) {
+    processedDeliveries.delete(deliveryId);
+    return false;
+  }
+  return true;
 }
 
 function verifySignature(req) {
@@ -158,6 +206,44 @@ async function runPipeline(repoUrl) {
   };
 }
 
+function storeAnalysis(repoUrl, analysis) {
+  latestByRepo.set(repoUrl, analysis);
+  upsertScanCache(repoUrl, analysis?.riskAnalysis || [], analysis?.overallRisk || "Low");
+
+  const arr = historyByRepo.get(repoUrl) || [];
+  arr.push(analysis);
+  historyByRepo.set(repoUrl, arr.slice(-MAX_HISTORY_PER_REPO));
+
+  appendLine(ANALYSES_FILE, analysis);
+}
+
+function schedulePipeline(repoUrl, source = "webhook") {
+  if (!repoUrl) return;
+
+  if (inflightByRepo.has(repoUrl)) {
+    // Collapse bursts: one extra rerun after current in-flight finishes.
+    pendingByRepo.add(repoUrl);
+    return;
+  }
+
+  const runner = (async () => {
+    try {
+      do {
+        pendingByRepo.delete(repoUrl);
+        const analysis = await runPipeline(repoUrl);
+        storeAnalysis(repoUrl, analysis);
+        console.log(`✅ ${source} scan updated for ${repoUrl}`);
+      } while (pendingByRepo.has(repoUrl));
+    } catch (err) {
+      console.error(`❗ ${source} pipeline failed:`, err.message);
+    } finally {
+      inflightByRepo.delete(repoUrl);
+    }
+  })();
+
+  inflightByRepo.set(repoUrl, runner);
+}
+
 // -----------------------------------
 // POST /api/webhooks/github
 // -----------------------------------
@@ -169,7 +255,11 @@ exports.githubWebhook = async (req, res) => {
 
     const eventName = req.headers["x-github-event"];
     const delivery = req.headers["x-github-delivery"];
+    if (hasSeenDelivery(delivery)) {
+      return res.status(200).json({ ok: true, deduped: true });
+    }
     const payload = JSON.parse(req.body.toString("utf8"));
+    rememberDelivery(delivery);
 
     const evt = normalize(eventName, payload);
     pushEvent({ delivery, receivedAt: Date.now(), ...evt });
@@ -178,20 +268,8 @@ exports.githubWebhook = async (req, res) => {
     res.status(200).json({ ok: true });
 
     // Run async
-    if (evt.repoUrl && evt.type !== "ping") {
-      runPipeline(evt.repoUrl)
-        .then((analysis) => {
-          latestByRepo.set(evt.repoUrl, analysis);
-
-          // keep small in-memory history per repo
-          const arr = historyByRepo.get(evt.repoUrl) || [];
-          arr.push(analysis);
-          historyByRepo.set(evt.repoUrl, arr.slice(-MAX_HISTORY_PER_REPO));
-
-          appendLine(ANALYSES_FILE, analysis); // ✅ persist analysis
-          console.log(`✅ Webhook scan updated for ${evt.repoUrl}`);
-        })
-        .catch((err) => console.error("❗ Webhook pipeline failed:", err.message));
+    if (evt.repoUrl && SCAN_TRIGGER_EVENTS.has(evt.type)) {
+      schedulePipeline(evt.repoUrl, "Webhook");
     }
   } catch (err) {
     console.error("Webhook error:", err);
@@ -203,6 +281,9 @@ exports.githubWebhook = async (req, res) => {
 // GET /api/webhooks/events
 // -----------------------------------
 exports.getEvents = (req, res) => {
+  if (!isMonitorAuthorized(req)) {
+    return res.status(401).json({ error: "Unauthorized monitor access" });
+  }
   res.json({ events });
 };
 
@@ -210,11 +291,21 @@ exports.getEvents = (req, res) => {
 // GET /api/webhooks/latest?repoUrl=...
 // -----------------------------------
 exports.getLatest = (req, res) => {
+  if (!isMonitorAuthorized(req)) {
+    return res.status(401).json({ error: "Unauthorized monitor access" });
+  }
   const repoUrl = req.query.repoUrl;
 
   if (repoUrl) {
     const analysis = latestByRepo.get(repoUrl);
-    if (!analysis) return res.status(404).json({ error: "No analysis yet for this repo" });
+    if (!analysis) {
+      return res.json({
+        analysis: null,
+        status: "pending",
+        message:
+          "No analysis yet for this repo. Trigger a webhook event or click Re-analyze now.",
+      });
+    }
     return res.json({ analysis });
   }
 
@@ -225,13 +316,20 @@ exports.getLatest = (req, res) => {
     }
   }
 
-  return res.status(404).json({ error: "No webhook analyses yet" });
+  return res.json({
+    analysis: null,
+    status: "pending",
+    message: "No webhook analyses yet.",
+  });
 };
 
 // -----------------------------------
 // GET /api/webhooks/history?repoUrl=...&limit=20
 // -----------------------------------
 exports.getHistory = (req, res) => {
+  if (!isMonitorAuthorized(req)) {
+    return res.status(401).json({ error: "Unauthorized monitor access" });
+  }
   const repoUrl = req.query.repoUrl;
   const limit = Math.max(1, Math.min(50, Number(req.query.limit || 20)));
 
@@ -245,6 +343,9 @@ exports.getHistory = (req, res) => {
 // body: { repoUrl: "https://github.com/owner/repo" }
 exports.reanalyze = async (req, res) => {
   try {
+    if (!isMonitorAuthorized(req)) {
+      return res.status(401).json({ error: "Unauthorized monitor access" });
+    }
     const { repoUrl } = req.body || {};
     if (!repoUrl) return res.status(400).json({ error: "Missing repoUrl" });
 
@@ -252,25 +353,7 @@ exports.reanalyze = async (req, res) => {
     res.json({ ok: true, repoUrl });
 
     // run async pipeline (same as webhook)
-    runPipeline(repoUrl)
-      .then((analysis) => {
-        latestByRepo.set(repoUrl, analysis);
-
-        // history (if you have it)
-        if (typeof historyByRepo !== "undefined") {
-          const arr = historyByRepo.get(repoUrl) || [];
-          arr.push(analysis);
-          historyByRepo.set(repoUrl, arr.slice(-20));
-        }
-
-        // persistence (if enabled)
-        try {
-          appendLine(ANALYSES_FILE, analysis);
-        } catch {}
-
-        console.log(`🔁 Manual re-analysis updated for ${repoUrl}`);
-      })
-      .catch((err) => console.error("❗ Reanalyze failed:", err.message));
+    schedulePipeline(repoUrl, "Re-analyze");
   } catch (err) {
     console.error("Reanalyze error:", err);
     return res.status(500).json({ error: err.message });
